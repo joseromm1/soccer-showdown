@@ -2,57 +2,31 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-  <meta name="description" content="Soccer Showdown — first to 3 goals in 2 minutes.">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b140c">
   <title>Soccer Showdown</title>
-
-  <!-- Playables SDK must load before game code. -->
-  <!-- The SDK can be a no-op when running outside YouTube Playables. -->
-  <script src="https://www.gstatic.com/youtube/gaming/playables/v1/sdk.js"></script>
-
-  <!-- Game dependencies -->
-  <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-
   <style>
     html, body {
       margin: 0;
+      padding: 0;
       width: 100%;
       height: 100%;
       overflow: hidden;
       background: #0b140c;
-      touch-action: none;
-      -webkit-user-select: none;
-      user-select: none;
     }
     body {
-      position: fixed;
-      inset: 0;
+      touch-action: none;
     }
     canvas {
       display: block;
-      width: 100%;
-      height: 100%;
+      width: 100vw !important;
+      height: 100vh !important;
     }
   </style>
-  
-<script>
-  // YouTube Playables SDK integration.
-  // The SDK is a no-op outside the Playables environment.
-  function playableSdkCall(name) {
-    try {
-      if (window.playables && typeof window.playables[name] === "function") {
-        window.playables[name]();
-      } else if (window.youtube && window.youtube.playables &&
-                 typeof window.youtube.playables[name] === "function") {
-        window.youtube.playables[name]();
-      }
-    } catch (e) {
-      console.warn("Playables SDK call failed:", name, e);
-    }
-  }
-</script>
 
+  <!-- Game libraries MUST load before the game source. -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
 <script>
@@ -111,14 +85,6 @@ const config = {
 };
 
 const game = new Phaser.Game(config);
-
-function notifyPlayablesFirstFrameReady() {
-    playableSdkCall("firstFrameReady");
-}
-
-function notifyPlayablesGameReady() {
-    playableSdkCall("gameReady");
-}
 
 
 // ==========================================
@@ -203,13 +169,7 @@ let statusText = null;
 let menuButtons = []; // { el, yOffset }
 let menuOpen = false;
 
-// Short-lived visual effects for kicked balls. Gameplay/physics are unchanged.
-let shotEffects = [];
-
 let gameOverText = null;
-let gameOverPanel = null;
-let playAgainButton = null;
-let menuButton = null;
 let roomCodeOverlay = null;
 
 let scene; // reference to the Phaser scene
@@ -323,11 +283,6 @@ function create() {
     });
 
     buildMenu(this);
-    // Initial menu is now rendered and interactive.
-    requestAnimationFrame(() => {
-        notifyPlayablesFirstFrameReady();
-        notifyPlayablesGameReady();
-    });
 
     // Fit the camera + reposition all screen UI, now and on every resize
     applyResponsiveLayout(this);
@@ -372,17 +327,13 @@ function applyResponsiveLayout(sc) {
     if (menuOpen) {
         const midY = h / 2;
         if (menuPanel) menuPanel.setPosition(midX, midY);
-        if (menuPanel && menuPanel._menuBackdrop) menuPanel._menuBackdrop.setPosition(midX, midY).setSize(w, h);
-        if (menuTitle) menuTitle.setPosition(midX, midY - 245);
-        if (menuSubtitle) menuSubtitle.setPosition(midX, midY - 190);
-        if (statusText) statusText.setPosition(midX, midY + 252);
+        if (menuTitle) menuTitle.setPosition(midX, midY - 210);
+        if (menuSubtitle) menuSubtitle.setPosition(midX, midY - 155);
+        if (statusText) statusText.setPosition(midX, midY + 200);
         menuButtons.forEach(b => b.el.setPosition(midX, midY + b.yOffset));
     }
 
-    if (gameOverPanel) gameOverPanel.setPosition(midX, h / 2);
-    if (gameOverText) gameOverText.setPosition(midX, h / 2 - 125);
-    if (playAgainButton) playAgainButton.setPosition(midX, h / 2 + 55);
-    if (menuButton) menuButton.setPosition(midX, h / 2 + 125);
+    if (gameOverText) gameOverText.setPosition(midX, h / 2);
 }
 
 
@@ -396,107 +347,74 @@ function buildMenu(sc) {
     const midX = sc.scale.width / 2;
     const midY = sc.scale.height / 2;
 
-    // Full-screen dimmer + larger glass-style panel for a stronger start screen.
-    const backdrop = sc.add.rectangle(midX, midY, sc.scale.width, sc.scale.height, 0x061009, 0.58)
-        .setScrollFactor(0).setDepth(198);
+    // Backdrop panel so the menu reads clearly over the pitch
+    menuPanel = sc.add.rectangle(midX, midY, 620, 520, 0x0a1a0d, 0.72)
+        .setScrollFactor(0).setDepth(199).setStrokeStyle(3, 0x3c9b47, 0.9);
 
-    menuPanel = sc.add.rectangle(midX, midY, 760, 620, 0x0a1a0d, 0.94)
-        .setScrollFactor(0).setDepth(199)
-        .setStrokeStyle(4, 0x48b85a, 0.95);
-
-    // Keep the backdrop attached to the menu lifecycle without changing gameplay.
-    menuPanel._menuBackdrop = backdrop;
-
-    menuTitle = sc.add.text(midX, midY - 245, "⚽ SOCCER SHOWDOWN", {
-        fontFamily: "Arial", fontSize: "58px", fontStyle: "bold", color: "#ffffff",
-        stroke: "#0b3312", strokeThickness: 10
+    menuTitle = sc.add.text(midX, midY - 210, "⚽ SOCCER", {
+        fontFamily: "Arial", fontSize: "60px", fontStyle: "bold", color: "#ffffff",
+        stroke: "#0f3d18", strokeThickness: 8
     }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
 
-    menuSubtitle = sc.add.text(midX, midY - 190,
-        "FIRST TO " + WIN_SCORE + " GOALS  •  2 MINUTES", {
-        fontFamily: "Arial", fontSize: "20px", fontStyle: "bold", color: "#a9e6b5",
-        letterSpacing: 1
+    menuSubtitle = sc.add.text(midX, midY - 155, "First to " + WIN_SCORE + " goals wins", {
+        fontFamily: "Arial", fontSize: "18px", fontStyle: "bold", color: "#a9e6b5"
     }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
 
-    statusText = sc.add.text(midX, midY + 252, "", {
-        fontFamily: "Arial", fontSize: "17px", fontStyle: "bold", color: "#ffff88",
-        align: "center"
+    statusText = sc.add.text(midX, midY + 200, "", {
+        fontFamily: "Arial", fontSize: "17px", fontStyle: "bold", color: "#ffff88", align: "center"
     }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
 
     const makeButton = (yOffset, label, onClick) => {
         const btn = sc.add.text(midX, midY + yOffset, label, {
             fontFamily: "Arial", fontSize: "24px", fontStyle: "bold", color: "#ffffff",
-            backgroundColor: "#1e5c2e",
-            padding: { x: 30, y: 15 },
-            align: "center",
-            stroke: "#09210d",
-            strokeThickness: 3
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(200)
-          .setInteractive({ useHandCursor: true });
+            backgroundColor: "#1e5c2e", padding: { x: 22, y: 12 }, align: "center"
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(200).setInteractive({ useHandCursor: true });
 
-        btn.on("pointerover", () => {
-            btn.setStyle({ backgroundColor: "#35a950" });
-            sc.tweens.add({
-                targets: btn,
-                scaleX: 1.04,
-                scaleY: 1.04,
-                duration: 100,
-                ease: "Power2"
-            });
-        });
-        btn.on("pointerout", () => {
-            btn.setStyle({ backgroundColor: "#1e5c2e" });
-            sc.tweens.add({
-                targets: btn,
-                scaleX: 1,
-                scaleY: 1,
-                duration: 100,
-                ease: "Power2"
-            });
-        });
+        btn.on("pointerover", () => btn.setStyle({ backgroundColor: "#2c8a45" }));
+        btn.on("pointerout", () => btn.setStyle({ backgroundColor: "#1e5c2e" }));
         btn.on("pointerdown", onClick);
 
         menuButtons.push({ el: btn, yOffset });
         return btn;
     };
 
-    makeButton(-105, "🤖  VS BOT", () => {
+    makeButton(-80, "🤖  VS BOT", () => {
         mode = "bot";
         p2Name.setText("HELIOS");
         closeMenu();
         beginMatch();
     });
 
-    makeButton(-30, "👥  LOCAL 2 PLAYER", () => {
+    makeButton(-20, "👥  LOCAL 2 PLAYER", () => {
         mode = "local";
         p2Name.setText("P2");
         closeMenu();
         beginMatch();
     });
 
-    makeButton(45, "🌐  HOST ONLINE MATCH", () => {
+    makeButton(40, "🌐  HOST ONLINE MATCH", () => {
         hideButtons();
         startHostFlow(sc);
     });
 
-    makeButton(120, "🔗  JOIN ONLINE MATCH", () => {
+    makeButton(100, "🔗  JOIN ONLINE MATCH", () => {
         hideButtons();
         startJoinFlow(sc);
     });
 
-    const controlsHint = sc.add.text(midX, midY + 205,
-        "P1: WASD + SPACE   •   P2: ARROWS + ENTER", {
-        fontFamily: "Arial", fontSize: "15px", fontStyle: "bold", color: "#c9d8cc"
+    const controlsHint = sc.add.text(midX, midY + 165,
+        "P1: WASD + Space   •   P2: Arrows + Enter", {
+        fontFamily: "Arial", fontSize: "14px", color: "#cccccc"
     }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
-    menuButtons.push({ el: controlsHint, yOffset: 205 });
+    menuButtons.push({ el: controlsHint, yOffset: 165 });
 }
+
 function hideButtons() {
     menuButtons.forEach(b => b.el.setVisible(false));
     if (menuSubtitle) menuSubtitle.setVisible(false);
 }
 
 function closeMenu() {
-    if (menuPanel && menuPanel._menuBackdrop) menuPanel._menuBackdrop.destroy();
     if (menuPanel) menuPanel.destroy();
     if (menuTitle) menuTitle.destroy();
     if (menuSubtitle) menuSubtitle.destroy();
@@ -538,13 +456,7 @@ function startHostFlow(sc) {
 
     peer.on("connection", (c) => {
         conn = c;
-        conn.on("data", (data) => {
-            if (data && data.type === "restart") {
-                resetMatchForReplay();
-                return;
-            }
-            remoteInput = data || remoteInput;
-        });
+        conn.on("data", (data) => { remoteInput = data; });
         conn.on("open", () => {
             mode = "online-host";
             p2Name.setText("PLAYER 2");
@@ -578,7 +490,7 @@ function startJoinFlow(sc) {
     peer = new Peer();
 
     peer.on("open", () => {
-        conn = peer.connect(hostId.trim(), { reliable: true });
+        conn = peer.connect(hostId.trim());
 
         conn.on("open", () => {
             mode = "online-client";
@@ -600,40 +512,26 @@ function startJoinFlow(sc) {
 function handleOpponentDisconnect(sc) {
     if (!matchStarted || gameOver) return;
     gameOver = true;
-    matchStarted = false;
     players.p1.setVelocity(0, 0);
     players.p2.setVelocity(0, 0);
     ball.setVelocity(0, 0);
 
-    playerScore = 0;
-    botScore = 0;
-    removeGameOverUI();
-    gameOverPanel = sc.add.rectangle(sc.scale.width / 2, sc.scale.height / 2, 600, 360, 0x061009, 0.96)
-        .setScrollFactor(0).setDepth(300).setStrokeStyle(4, 0xff5555, 0.9);
-    gameOverText = sc.add.text(sc.scale.width / 2, sc.scale.height / 2 - 80,
-        "OPPONENT DISCONNECTED", {
-        fontFamily: "Arial", fontSize: "34px", fontStyle: "bold", color: "#ffffff",
-        align: "center"
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(301);
-    menuButton = sc.add.text(sc.scale.width / 2, sc.scale.height / 2 + 70, "BACK TO MENU", {
-        fontFamily: "Arial", fontSize: "22px", fontStyle: "bold", color: "#ffffff",
-        backgroundColor: "#1e5c2e", padding: { x: 24, y: 14 }
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(301)
-      .setInteractive({ useHandCursor: true })
-      .on("pointerdown", () => returnToMenu(sc));
+    gameOverText = sc.add.text(sc.scale.width / 2, sc.scale.height / 2,
+        "OPPONENT DISCONNECTED\n\nREFRESH TO PLAY AGAIN", {
+        fontFamily: "Arial", fontSize: "36px", fontStyle: "bold", color: "#ffffff",
+        align: "center", backgroundColor: "#000000cc", padding: { x: 30, y: 25 }
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
 }
 
 // Host -> client: authoritative world state
 function sendHostState() {
     if (!conn || !conn.open) return;
     conn.send({
-        type: "state",
         p1: { x: players.p1.x, y: players.p1.y },
         p2: { x: players.p2.x, y: players.p2.y },
         ball: { x: ball.x, y: ball.y },
         playerScore, botScore,
-        timeLeft,
-        gameOver
+        timeLeft
     });
 }
 
@@ -647,31 +545,14 @@ function sendClientInput(input) {
 function applyHostState(data) {
     if (!data || !data.ball) return;
 
-    // The client controls p1 locally. The host's p1 is the client's opponent.
-    lerpTowards(players.p2, data.p1.x, data.p1.y, 0.65);
-    lerpTowards(ball, data.ball.x, data.ball.y, 0.65);
+    lerpTowards(players.p2, data.p1.x, data.p1.y, 0.5); // host's player -> shown as opponent
+    lerpTowards(ball, data.ball.x, data.ball.y, 0.5);
 
-    // Host's playerScore is the opponent's score from the client's perspective.
-    playerScore = data.botScore;
-    botScore = data.playerScore;
+    playerScore = data.playerScore;
+    botScore = data.botScore;
     timeLeft = data.timeLeft;
     updateScore();
     updateTimer();
-
-    // Keep the client in sync when the host finishes the match.
-    if (data.gameOver && !gameOver) {
-        gameOver = true;
-        matchStarted = true;
-        players.p1.setVelocity(0, 0);
-        players.p2.setVelocity(0, 0);
-        ball.setVelocity(0, 0);
-        showGameOverUI(scene);
-    } else if (!data.gameOver && gameOver) {
-        gameOver = false;
-        matchStarted = true;
-        removeGameOverUI();
-        resetBall();
-    }
 }
 
 function lerpTowards(obj, x, y, t) {
@@ -757,14 +638,7 @@ function removeRoomCodeOverlay() {
 
 function beginMatch() {
     matchStarted = true;
-    gameOver = false;
-    timeLeft = 120;
-    playerScore = 0;
-    botScore = 0;
-    updateScore();
-    updateTimer();
     removeRoomCodeOverlay();
-    removeGameOverUI();
 }
 
 
@@ -783,8 +657,6 @@ function update(time, delta) {
 
     p1Name.x = players.p1.x; p1Name.y = players.p1.y - 65;
     p2Name.x = players.p2.x; p2Name.y = players.p2.y - 65;
-
-    updateShotEffects(delta);
 
     ball.body.velocity.x *= 0.992;
     ball.body.velocity.y *= 0.992;
@@ -894,7 +766,6 @@ function tryKick(sprite, state, goalX) {
     }
 
     ball.setVelocity(Math.cos(angle) * power, Math.sin(angle) * power);
-    createShotEffect(angle, power === POWER_SHOT_POWER);
     state.lastKick = now;
 }
 
@@ -925,113 +796,8 @@ function ballKickedByCollision(sprite) {
     const angle = Phaser.Math.Angle.Between(sprite.x, sprite.y, ball.x, ball.y);
     const speed = Math.max(ball.body.velocity.length(), 100);
     ball.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
-    createShotEffect(angle, speed >= POWER_SHOT_POWER * 0.85);
 }
 
-
-// ==========================================
-// BALL FIRE / SHOOT ANIMATION
-// ==========================================
-
-function createShotEffect(angle, powerShot) {
-    if (!scene || !ball) return;
-
-    const g = scene.add.graphics().setDepth(1);
-
-    const sparks = [];
-    const count = powerShot ? 16 : 10;
-    const speed = powerShot ? 260 : 190;
-
-    for (let i = 0; i < count; i++) {
-        const spread = Phaser.Math.FloatBetween(-0.8, 0.8);
-        const direction = angle + Math.PI + spread;
-        sparks.push({
-            x: ball.x,
-            y: ball.y,
-            vx: Math.cos(direction) * Phaser.Math.FloatBetween(speed * 0.45, speed),
-            vy: Math.sin(direction) * Phaser.Math.FloatBetween(speed * 0.45, speed),
-            size: Phaser.Math.FloatBetween(2, powerShot ? 7 : 5),
-            life: Phaser.Math.FloatBetween(100, powerShot ? 260 : 190)
-        });
-    }
-
-    shotEffects.push({
-        g,
-        angle,
-        life: powerShot ? 280 : 210,
-        maxLife: powerShot ? 280 : 210,
-        sparks,
-        powerShot
-    });
-}
-
-function updateShotEffects(delta) {
-    for (let i = shotEffects.length - 1; i >= 0; i--) {
-        const effect = shotEffects[i];
-        effect.life -= delta;
-
-        if (effect.life <= 0) {
-            effect.g.destroy();
-            shotEffects.splice(i, 1);
-            continue;
-        }
-
-        const fade = Phaser.Math.Clamp(effect.life / effect.maxLife, 0, 1);
-        const radius = BALL_RADIUS + (effect.powerShot ? 17 : 11);
-
-        effect.g.clear();
-
-        // Fiery trail behind the ball.
-        const trailLength = effect.powerShot ? 105 : 75;
-        const backX = ball.x - Math.cos(effect.angle) * trailLength;
-        const backY = ball.y - Math.sin(effect.angle) * trailLength;
-
-        effect.g.lineStyle(effect.powerShot ? 22 : 15, 0xff8a00, 0.12 * fade);
-        effect.g.beginPath();
-        effect.g.moveTo(ball.x, ball.y);
-        effect.g.lineTo(backX, backY);
-        effect.g.strokePath();
-
-        effect.g.lineStyle(effect.powerShot ? 10 : 7, 0xffc400, 0.45 * fade);
-        effect.g.beginPath();
-        effect.g.moveTo(ball.x, ball.y);
-        effect.g.lineTo(backX, backY);
-        effect.g.strokePath();
-
-        // Hot ring around the ball.
-        effect.g.lineStyle(effect.powerShot ? 7 : 5, 0xff5a00, 0.65 * fade);
-        effect.g.strokeCircle(ball.x, ball.y, radius);
-
-        effect.g.lineStyle(effect.powerShot ? 3 : 2, 0xffff66, 0.9 * fade);
-        effect.g.strokeCircle(ball.x, ball.y, radius - 5);
-
-        // Flying sparks.
-        for (const spark of effect.sparks) {
-            if (spark.life <= 0) continue;
-
-            spark.life -= delta;
-            spark.x += spark.vx * delta / 1000;
-            spark.y += spark.vy * delta / 1000;
-            spark.vx *= 0.985;
-            spark.vy *= 0.985;
-
-            const sparkFade = Phaser.Math.Clamp(spark.life / 180, 0, 1) * fade;
-            effect.g.fillStyle(spark.size > 5 ? 0xff5a00 : 0xffff66, sparkFade);
-            effect.g.fillCircle(spark.x, spark.y, spark.size * sparkFade);
-        }
-
-        // Power shots get an extra expanding shockwave.
-        if (effect.powerShot) {
-            const progress = 1 - fade;
-            effect.g.lineStyle(4, 0xffd21a, 0.55 * fade);
-            effect.g.strokeCircle(
-                ball.x,
-                ball.y,
-                BALL_RADIUS + 10 + progress * 35
-            );
-        }
-    }
-}
 
 // ==========================================
 // BOT AI (vs-bot mode only)
@@ -1194,98 +960,20 @@ function endGame(sc) {
     players.p2.setVelocity(0, 0);
     ball.setVelocity(0, 0);
 
+    let result = "DRAW!";
+    if (playerScore > botScore) result = "YOU WIN!";
+    if (botScore > playerScore) result = "OPPONENT WINS!";
+
     if (mode === "online-host") sendHostState();
-    showGameOverUI(sc);
-}
 
-function showGameOverUI(sc) {
-    removeGameOverUI();
-
-    const w = sc.scale.width;
-    const h = sc.scale.height;
-    const result = playerScore > botScore ? "YOU WIN!" :
-                   botScore > playerScore ? "OPPONENT WINS!" : "DRAW!";
-
-    gameOverPanel = sc.add.rectangle(w / 2, h / 2, 600, 430, 0x061009, 0.96)
-        .setScrollFactor(0).setDepth(300)
-        .setStrokeStyle(4, 0x48b85a, 0.95);
-
-    gameOverText = sc.add.text(w / 2, h / 2 - 125,
-        result + "\n\n" + playerScore + " - " + botScore, {
-        fontFamily: "Arial", fontSize: "42px", fontStyle: "bold", color: "#ffffff",
-        align: "center"
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(301);
-
-    const makeEndButton = (x, y, label, callback) => {
-        return sc.add.text(x, y, label, {
-            fontFamily: "Arial", fontSize: "22px", fontStyle: "bold", color: "#ffffff",
-            backgroundColor: "#1e5c2e", padding: { x: 24, y: 14 }, align: "center"
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(301)
-          .setInteractive({ useHandCursor: true })
-          .on("pointerover", function() { this.setStyle({ backgroundColor: "#35a950" }); })
-          .on("pointerout", function() { this.setStyle({ backgroundColor: "#1e5c2e" }); })
-          .on("pointerdown", callback);
-    };
-
-    playAgainButton = makeEndButton(w / 2, h / 2 + 55, "PLAY AGAIN", () => {
-        if (mode === "online-client") {
-            if (conn && conn.open) conn.send({ type: "restart" });
-        } else {
-            resetMatchForReplay();
+    gameOverText = sc.add.text(
+        sc.scale.width / 2, sc.scale.height / 2,
+        result + "\n\n" + playerScore + " - " + botScore + "\n\nREFRESH TO PLAY AGAIN",
+        {
+            fontFamily: "Arial", fontSize: "42px", fontStyle: "bold", color: "#ffffff",
+            align: "center", backgroundColor: "#000000cc", padding: { x: 30, y: 25 }
         }
-    });
-
-    menuButton = makeEndButton(w / 2, h / 2 + 125, "BACK TO MENU", () => {
-        returnToMenu(sc);
-    });
-
-    applyResponsiveLayout(sc);
-}
-
-function removeGameOverUI() {
-    if (gameOverPanel) gameOverPanel.destroy();
-    if (gameOverText) gameOverText.destroy();
-    if (playAgainButton) playAgainButton.destroy();
-    if (menuButton) menuButton.destroy();
-    gameOverPanel = null;
-    gameOverText = null;
-    playAgainButton = null;
-    menuButton = null;
-}
-
-function resetMatchForReplay() {
-    removeGameOverUI();
-    gameOver = false;
-    matchStarted = true;
-    timeLeft = 120;
-    playerScore = 0;
-    botScore = 0;
-    resetBall();
-    updateScore();
-    updateTimer();
-
-    if (mode === "online-host") sendHostState();
-}
-
-function returnToMenu(sc) {
-    removeGameOverUI();
-    gameOver = false;
-    matchStarted = false;
-    playerScore = 0;
-    botScore = 0;
-    timeLeft = 120;
-
-    if (mode === "online-host" || mode === "online-client") {
-        if (conn) { try { conn.close(); } catch (e) {} }
-        if (peer) { try { peer.destroy(); } catch (e) {} }
-        conn = null;
-        peer = null;
-        isHost = false;
-    }
-
-    resetBall();
-    buildMenu(sc);
-    applyResponsiveLayout(sc);
+    ).setOrigin(0.5).setScrollFactor(0).setDepth(200);
 }
 
 
