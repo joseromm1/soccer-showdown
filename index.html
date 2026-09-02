@@ -78,13 +78,40 @@ const config = {
             debug: false
         }
     },
+    input: {
+        keyboard: true,
+        activePointers: 3
+    },
+    render: {
+        antialias: true,
+        pixelArt: false,
+        powerPreference: "high-performance"
+    },
     scene: {
         create: create,
         update: update
     }
 };
 
-const game = new Phaser.Game(config);
+let game;
+window.addEventListener("error", (event) => {
+    const msg = event?.error?.message || event?.message || "Unknown JavaScript error";
+    console.error("Soccer Showdown startup error:", event.error || event.message);
+    const box = document.getElementById("startup-error") || document.createElement("div");
+    box.id = "startup-error";
+    box.style.cssText = "position:fixed;inset:0;z-index:99999;background:#111;color:#fff;font:16px Arial;padding:30px;box-sizing:border-box;white-space:pre-wrap;";
+    box.textContent = "SOCCER SHOWDOWN ERROR\\n\\n" + msg;
+    document.body.appendChild(box);
+});
+try {
+    game = new Phaser.Game(config);
+} catch (err) {
+    console.error("Could not start Phaser:", err);
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;inset:0;z-index:99999;background:#111;color:#fff;font:16px Arial;padding:30px;box-sizing:border-box;white-space:pre-wrap;";
+    box.textContent = "SOCCER SHOWDOWN ERROR\\n\\n" + (err?.stack || err);
+    document.body.appendChild(box);
+}
 
 
 // ==========================================
