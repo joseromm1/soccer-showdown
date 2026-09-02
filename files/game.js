@@ -1,0 +1,1320 @@
+// ==========================================
+// PAGE SETUP
+// Makes the canvas fill the entire browser
+// viewport (no letterboxing), no matter what
+// your surrounding HTML/CSS looks like.
+// ==========================================
+
+(function ensureFullscreenPage() {
+    const style = document.createElement("style");
+    style.textContent = `
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0b140c;
+        }
+        canvas {
+            display: block;
+        }
+    `;
+    document.head.appendChild(style);
+})();
+
+
+// ==========================================
+// PHASER CONFIG
+// ==========================================
+
+const config = {
+    type: Phaser.AUTO,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    backgroundColor: "#182818",
+    scale: {
+        mode: Phaser.Scale.RESIZE,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+        width: window.innerWidth,
+        height: window.innerHeight
+    },
+    physics: {
+        default: "arcade",
+        arcade: {
+            gravity: { y: 0 },
+            debug: false
+        }
+    },
+    scene: {
+        create: create,
+        update: update
+    }
+};
+
+const game = new Phaser.Game(config);
+
+
+// ==========================================
+// SETTINGS
+// ==========================================
+
+const WORLD_WIDTH = 1800;
+const WORLD_HEIGHT = 1000;
+
+const FIELD_LEFT = 100;
+const FIELD_RIGHT = 1700;
+const FIELD_TOP = 100;
+const FIELD_BOTTOM = 900;
+
+const GOAL_HEIGHT = 300;
+const GOAL_DEPTH = 140;
+
+const PLAYER_RADIUS = 38;
+const BALL_RADIUS = 24;
+
+const PLAYER_SPEED = 430;
+const BOT_SPEED = 300;
+
+const NORMAL_KICK_POWER = 650;
+const POWER_SHOT_POWER = 1250;
+
+// How much empty "outside" margin to keep visible around the pitch
+const CAMERA_MARGIN = 70;
+
+// Networking sync rate (ms between state/input packets)
+const NET_SEND_INTERVAL = 50;
+
+// First side to reach this many goals wins immediately
+const WIN_SCORE = 3;
+
+
+// ==========================================
+// STATE
+// ==========================================
+
+let ball;
+
+let cursorKeys;
+let wasdKeys;
+
+let scoreText;
+let timerText;
+
+let timeLeft = 120;
+let gameOver = false;
+let matchStarted = false;
+
+let mode = null; // 'bot' | 'local' | 'online-host' | 'online-client'
+
+let players = {
+    p1: null,
+    p2: null
+};
+
+let p1State = { controlTime: 0, powerReady: false, lastKick: 0 };
+let p2State = { controlTime: 0, powerReady: false, lastKick: 0 };
+
+let p1Bar, p1BarBg, p1PowerText;
+let p2Bar, p2BarBg, p2PowerText;
+
+let p1Name, p2Name;
+
+let botStuck = { sampleX: 0, sampleY: 0, timer: 0, strikes: 0, nudgeUntil: 0, nudgeAngle: 0 };
+
+// Networking
+let peer = null;
+let conn = null;
+let isHost = false;
+let netSendTimer = 0;
+let remoteInput = { up: false, down: false, left: false, right: false, kick: false };
+
+// Menu UI
+let menuPanel = null;
+let menuTitle = null;
+let menuSubtitle = null;
+let statusText = null;
+let menuButtons = []; // { el, yOffset }
+let menuOpen = false;
+
+// Short-lived visual effects for kicked balls. Gameplay/physics are unchanged.
+let shotEffects = [];
+
+let gameOverText = null;
+let gameOverPanel = null;
+let playAgainButton = null;
+let menuButton = null;
+let roomCodeOverlay = null;
+
+let scene; // reference to the Phaser scene
+
+let playerScore = 0;
+let botScore = 0;
+
+
+// ==========================================
+// CREATE
+// ==========================================
+
+function create() {
+    scene = this;
+
+    this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+    // Textures
+    createCircleTexture(this, "p1Texture", PLAYER_RADIUS, 0x2388ff);
+    createCircleTexture(this, "p2Texture", PLAYER_RADIUS, 0xff3b3b);
+    createBallTexture(this, "ballTexture", BALL_RADIUS);
+
+    // Field & goals
+    drawField(this);
+    drawGoals(this);
+
+    // Players
+    players.p1 = this.physics.add.sprite(450, WORLD_HEIGHT / 2, "p1Texture");
+    players.p1.setCircle(PLAYER_RADIUS);
+    players.p1.setCollideWorldBounds(true);
+    players.p1.setBounce(0);
+    players.p1.setDamping(true);
+    players.p1.setDrag(0.85);
+
+    players.p2 = this.physics.add.sprite(1350, WORLD_HEIGHT / 2, "p2Texture");
+    players.p2.setCircle(PLAYER_RADIUS);
+    players.p2.setCollideWorldBounds(true);
+    players.p2.setBounce(0);
+    players.p2.setDamping(true);
+    players.p2.setDrag(0.85);
+
+    // Ball
+    ball = this.physics.add.sprite(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, "ballTexture");
+    ball.setCircle(BALL_RADIUS);
+    ball.setBounce(0.85);
+    ball.setCollideWorldBounds(true);
+    ball.setDrag(20, 20);
+
+    // Collisions
+    this.physics.add.collider(players.p1, ball, () => ballKickedByCollision(players.p1), null, this);
+    this.physics.add.collider(players.p2, ball, () => ballKickedByCollision(players.p2), null, this);
+    this.physics.add.collider(players.p1, players.p2);
+
+    // Controls
+    cursorKeys = this.input.keyboard.createCursorKeys();
+    wasdKeys = this.input.keyboard.addKeys({
+        W: Phaser.Input.Keyboard.KeyCodes.W,
+        A: Phaser.Input.Keyboard.KeyCodes.A,
+        S: Phaser.Input.Keyboard.KeyCodes.S,
+        D: Phaser.Input.Keyboard.KeyCodes.D,
+        SPACE: Phaser.Input.Keyboard.KeyCodes.SPACE,
+        ENTER: Phaser.Input.Keyboard.KeyCodes.ENTER
+    });
+
+    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+    // ======================================
+    // UI (all screen-fixed; positions are
+    // recalculated by layoutUI() so they stay
+    // put correctly no matter the screen size)
+    // ======================================
+    scoreText = this.add.text(0, 25, "YOU  0     0  OPP", {
+        fontFamily: "Arial", fontSize: "32px", fontStyle: "bold", color: "#ffffff"
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(100);
+
+    timerText = this.add.text(0, 65, "2:00", {
+        fontFamily: "Arial", fontSize: "24px", fontStyle: "bold", color: "#ffffff"
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(100);
+
+    p1BarBg = this.add.rectangle(0, 0, 200, 16, 0x222222).setScrollFactor(0).setDepth(100);
+    p1Bar = this.add.rectangle(0, 0, 0, 12, 0x00ff88).setOrigin(0, 0.5).setScrollFactor(0).setDepth(101);
+    p1PowerText = this.add.text(0, 0, "P1: hold ball 2s", {
+        fontFamily: "Arial", fontSize: "14px", fontStyle: "bold", color: "#ffffff"
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(100);
+
+    p2BarBg = this.add.rectangle(0, 0, 200, 16, 0x222222).setScrollFactor(0).setDepth(100);
+    p2Bar = this.add.rectangle(0, 0, 0, 12, 0xff8800).setOrigin(0, 0.5).setScrollFactor(0).setDepth(101);
+    p2PowerText = this.add.text(0, 0, "P2: hold ball 2s", {
+        fontFamily: "Arial", fontSize: "14px", fontStyle: "bold", color: "#ffffff"
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(100);
+
+    // Name labels above players (these follow the sprites, not the screen)
+    p1Name = this.add.text(players.p1.x, players.p1.y - 65, "YOU", {
+        fontFamily: "Arial", fontSize: "18px", fontStyle: "bold", color: "#ffffff"
+    }).setOrigin(0.5);
+
+    p2Name = this.add.text(players.p2.x, players.p2.y - 65, "HELIOS", {
+        fontFamily: "Arial", fontSize: "18px", fontStyle: "bold", color: "#ffffff"
+    }).setOrigin(0.5);
+
+    // Match timer (only ticks once matchStarted is true)
+    this.time.addEvent({
+        delay: 1000,
+        loop: true,
+        callback: () => {
+            if (gameOver || !matchStarted) return;
+            timeLeft--;
+            updateTimer();
+            if (timeLeft <= 0) endGame(scene);
+        }
+    });
+
+    buildMenu(this);
+
+    // Fit the camera + reposition all screen UI, now and on every resize
+    applyResponsiveLayout(this);
+    this.scale.on("resize", () => applyResponsiveLayout(scene));
+}
+
+
+// ==========================================
+// RESPONSIVE LAYOUT
+// Keeps the camera fitted to the pitch and all
+// screen-fixed UI correctly placed, at any
+// window size.
+// ==========================================
+
+function applyResponsiveLayout(sc) {
+    const w = sc.scale.width;
+    const h = sc.scale.height;
+
+    // Camera: fit the whole pitch + a little margin, always centered
+    const viewW = (FIELD_RIGHT - FIELD_LEFT) + CAMERA_MARGIN * 2;
+    const viewH = (FIELD_BOTTOM - FIELD_TOP) + CAMERA_MARGIN * 2;
+    const zoom = Math.min(w / viewW, h / viewH);
+    sc.cameras.main.setZoom(zoom);
+    sc.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+
+    const midX = w / 2;
+
+    scoreText.x = midX;
+    timerText.x = midX;
+
+    const barY = h - 50;
+    const labelY = h - 85;
+
+    p1BarBg.setPosition(midX - 260, barY);
+    p1Bar.setPosition(midX - 360, barY);
+    p1PowerText.setPosition(midX - 260, labelY);
+
+    p2BarBg.setPosition(midX + 260, barY);
+    p2Bar.setPosition(midX + 160, barY);
+    p2PowerText.setPosition(midX + 260, labelY);
+
+    if (menuOpen) {
+        const midY = h / 2;
+        if (menuPanel) menuPanel.setPosition(midX, midY);
+        if (menuPanel && menuPanel._menuBackdrop) menuPanel._menuBackdrop.setPosition(midX, midY).setSize(w, h);
+        if (menuTitle) menuTitle.setPosition(midX, midY - 245);
+        if (menuSubtitle) menuSubtitle.setPosition(midX, midY - 190);
+        if (statusText) statusText.setPosition(midX, midY + 252);
+        menuButtons.forEach(b => b.el.setPosition(midX, midY + b.yOffset));
+    }
+
+    if (gameOverPanel) gameOverPanel.setPosition(midX, h / 2);
+    if (gameOverText) gameOverText.setPosition(midX, h / 2 - 125);
+    if (playAgainButton) playAgainButton.setPosition(midX, h / 2 + 55);
+    if (menuButton) menuButton.setPosition(midX, h / 2 + 125);
+}
+
+
+// ==========================================
+// MENU / START SCREEN
+// ==========================================
+
+function buildMenu(sc) {
+    menuOpen = true;
+
+    const midX = sc.scale.width / 2;
+    const midY = sc.scale.height / 2;
+
+    // Full-screen dimmer + larger glass-style panel for a stronger start screen.
+    const backdrop = sc.add.rectangle(midX, midY, sc.scale.width, sc.scale.height, 0x061009, 0.58)
+        .setScrollFactor(0).setDepth(198);
+
+    menuPanel = sc.add.rectangle(midX, midY, 760, 620, 0x0a1a0d, 0.94)
+        .setScrollFactor(0).setDepth(199)
+        .setStrokeStyle(4, 0x48b85a, 0.95);
+
+    // Keep the backdrop attached to the menu lifecycle without changing gameplay.
+    menuPanel._menuBackdrop = backdrop;
+
+    menuTitle = sc.add.text(midX, midY - 245, "⚽ SOCCER SHOWDOWN", {
+        fontFamily: "Arial", fontSize: "58px", fontStyle: "bold", color: "#ffffff",
+        stroke: "#0b3312", strokeThickness: 10
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
+
+    menuSubtitle = sc.add.text(midX, midY - 190,
+        "FIRST TO " + WIN_SCORE + " GOALS  •  2 MINUTES", {
+        fontFamily: "Arial", fontSize: "20px", fontStyle: "bold", color: "#a9e6b5",
+        letterSpacing: 1
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
+
+    statusText = sc.add.text(midX, midY + 252, "", {
+        fontFamily: "Arial", fontSize: "17px", fontStyle: "bold", color: "#ffff88",
+        align: "center"
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
+
+    const makeButton = (yOffset, label, onClick) => {
+        const btn = sc.add.text(midX, midY + yOffset, label, {
+            fontFamily: "Arial", fontSize: "24px", fontStyle: "bold", color: "#ffffff",
+            backgroundColor: "#1e5c2e",
+            padding: { x: 30, y: 15 },
+            align: "center",
+            stroke: "#09210d",
+            strokeThickness: 3
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(200)
+          .setInteractive({ useHandCursor: true });
+
+        btn.on("pointerover", () => {
+            btn.setStyle({ backgroundColor: "#35a950" });
+            sc.tweens.add({
+                targets: btn,
+                scaleX: 1.04,
+                scaleY: 1.04,
+                duration: 100,
+                ease: "Power2"
+            });
+        });
+        btn.on("pointerout", () => {
+            btn.setStyle({ backgroundColor: "#1e5c2e" });
+            sc.tweens.add({
+                targets: btn,
+                scaleX: 1,
+                scaleY: 1,
+                duration: 100,
+                ease: "Power2"
+            });
+        });
+        btn.on("pointerdown", onClick);
+
+        menuButtons.push({ el: btn, yOffset });
+        return btn;
+    };
+
+    makeButton(-105, "🤖  VS BOT", () => {
+        mode = "bot";
+        p2Name.setText("HELIOS");
+        closeMenu();
+        beginMatch();
+    });
+
+    makeButton(-30, "👥  LOCAL 2 PLAYER", () => {
+        mode = "local";
+        p2Name.setText("P2");
+        closeMenu();
+        beginMatch();
+    });
+
+    makeButton(45, "🌐  HOST ONLINE MATCH", () => {
+        hideButtons();
+        startHostFlow(sc);
+    });
+
+    makeButton(120, "🔗  JOIN ONLINE MATCH", () => {
+        hideButtons();
+        startJoinFlow(sc);
+    });
+
+    const controlsHint = sc.add.text(midX, midY + 205,
+        "P1: WASD + SPACE   •   P2: ARROWS + ENTER", {
+        fontFamily: "Arial", fontSize: "15px", fontStyle: "bold", color: "#c9d8cc"
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
+    menuButtons.push({ el: controlsHint, yOffset: 205 });
+}
+function hideButtons() {
+    menuButtons.forEach(b => b.el.setVisible(false));
+    if (menuSubtitle) menuSubtitle.setVisible(false);
+}
+
+function closeMenu() {
+    if (menuPanel && menuPanel._menuBackdrop) menuPanel._menuBackdrop.destroy();
+    if (menuPanel) menuPanel.destroy();
+    if (menuTitle) menuTitle.destroy();
+    if (menuSubtitle) menuSubtitle.destroy();
+    if (statusText) statusText.destroy();
+    menuButtons.forEach(b => b.el.destroy());
+
+    menuPanel = null;
+    menuTitle = null;
+    menuSubtitle = null;
+    statusText = null;
+    menuButtons = [];
+    menuOpen = false;
+
+    removeRoomCodeOverlay();
+}
+
+
+// ==========================================
+// ONLINE MULTIPLAYER (PeerJS)
+// Requires: <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+// added to your HTML before game.js
+// ==========================================
+
+function startHostFlow(sc) {
+    if (typeof Peer === "undefined") {
+        statusText.setText("Missing PeerJS library.\nAdd the peerjs <script> tag to your HTML.");
+        return;
+    }
+
+    isHost = true;
+    statusText.setText("Creating room...");
+
+    peer = new Peer();
+
+    peer.on("open", (id) => {
+        statusText.setText("Waiting for your friend to join...");
+        showRoomCodeOverlay(id);
+    });
+
+    peer.on("connection", (c) => {
+        conn = c;
+        conn.on("data", (data) => {
+            if (data && data.type === "restart") {
+                resetMatchForReplay();
+                return;
+            }
+            remoteInput = data || remoteInput;
+        });
+        conn.on("open", () => {
+            mode = "online-host";
+            p2Name.setText("PLAYER 2");
+            closeMenu();
+            beginMatch();
+        });
+        conn.on("close", () => handleOpponentDisconnect(sc));
+    });
+
+    peer.on("error", (err) => {
+        statusText.setText("Connection error: " + err.type);
+    });
+}
+
+function startJoinFlow(sc) {
+    if (typeof Peer === "undefined") {
+        statusText.setText("Missing PeerJS library.\nAdd the peerjs <script> tag to your HTML.");
+        return;
+    }
+
+    const hostId = window.prompt("Enter the room code your friend gave you:");
+    if (!hostId) {
+        menuButtons.forEach(b => b.el.setVisible(true));
+        if (menuSubtitle) menuSubtitle.setVisible(true);
+        return;
+    }
+
+    isHost = false;
+    statusText.setText("Connecting...");
+
+    peer = new Peer();
+
+    peer.on("open", () => {
+        conn = peer.connect(hostId.trim(), { reliable: true });
+
+        conn.on("open", () => {
+            mode = "online-client";
+            p1Name.setText("YOU");
+            p2Name.setText("HOST");
+            closeMenu();
+            beginMatch();
+        });
+
+        conn.on("data", (data) => applyHostState(data));
+        conn.on("close", () => handleOpponentDisconnect(sc));
+    });
+
+    peer.on("error", (err) => {
+        statusText.setText("Connection error: " + err.type);
+    });
+}
+
+function handleOpponentDisconnect(sc) {
+    if (!matchStarted || gameOver) return;
+    gameOver = true;
+    matchStarted = false;
+    players.p1.setVelocity(0, 0);
+    players.p2.setVelocity(0, 0);
+    ball.setVelocity(0, 0);
+
+    playerScore = 0;
+    botScore = 0;
+    removeGameOverUI();
+    gameOverPanel = sc.add.rectangle(sc.scale.width / 2, sc.scale.height / 2, 600, 360, 0x061009, 0.96)
+        .setScrollFactor(0).setDepth(300).setStrokeStyle(4, 0xff5555, 0.9);
+    gameOverText = sc.add.text(sc.scale.width / 2, sc.scale.height / 2 - 80,
+        "OPPONENT DISCONNECTED", {
+        fontFamily: "Arial", fontSize: "34px", fontStyle: "bold", color: "#ffffff",
+        align: "center"
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(301);
+    menuButton = sc.add.text(sc.scale.width / 2, sc.scale.height / 2 + 70, "BACK TO MENU", {
+        fontFamily: "Arial", fontSize: "22px", fontStyle: "bold", color: "#ffffff",
+        backgroundColor: "#1e5c2e", padding: { x: 24, y: 14 }
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(301)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerdown", () => returnToMenu(sc));
+}
+
+// Host -> client: authoritative world state
+function sendHostState() {
+    if (!conn || !conn.open) return;
+    conn.send({
+        type: "state",
+        p1: { x: players.p1.x, y: players.p1.y },
+        p2: { x: players.p2.x, y: players.p2.y },
+        ball: { x: ball.x, y: ball.y },
+        playerScore, botScore,
+        timeLeft,
+        gameOver
+    });
+}
+
+// Client -> host: raw input each tick
+function sendClientInput(input) {
+    if (!conn || !conn.open) return;
+    conn.send(input);
+}
+
+// Client applies state received from host.
+function applyHostState(data) {
+    if (!data || !data.ball) return;
+
+    // The client controls p1 locally. The host's p1 is the client's opponent.
+    lerpTowards(players.p2, data.p1.x, data.p1.y, 0.65);
+    lerpTowards(ball, data.ball.x, data.ball.y, 0.65);
+
+    // Host's playerScore is the opponent's score from the client's perspective.
+    playerScore = data.botScore;
+    botScore = data.playerScore;
+    timeLeft = data.timeLeft;
+    updateScore();
+    updateTimer();
+
+    // Keep the client in sync when the host finishes the match.
+    if (data.gameOver && !gameOver) {
+        gameOver = true;
+        matchStarted = true;
+        players.p1.setVelocity(0, 0);
+        players.p2.setVelocity(0, 0);
+        ball.setVelocity(0, 0);
+        showGameOverUI(scene);
+    } else if (!data.gameOver && gameOver) {
+        gameOver = false;
+        matchStarted = true;
+        removeGameOverUI();
+        resetBall();
+    }
+}
+
+function lerpTowards(obj, x, y, t) {
+    obj.x = Phaser.Math.Linear(obj.x, x, t);
+    obj.y = Phaser.Math.Linear(obj.y, y, t);
+}
+
+
+// ==========================================
+// ROOM CODE OVERLAY (copy-to-clipboard)
+// A real DOM button so it can use the
+// clipboard API, layered over the canvas.
+// ==========================================
+
+function showRoomCodeOverlay(code) {
+    removeRoomCodeOverlay();
+
+    const box = document.createElement("div");
+    box.style.cssText = `
+        position: fixed;
+        left: 50%;
+        bottom: 6%;
+        transform: translateX(-50%);
+        background: rgba(0,0,0,0.85);
+        color: #fff;
+        padding: 14px 18px;
+        border-radius: 12px;
+        font-family: Arial, sans-serif;
+        font-size: 16px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        z-index: 1000;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+        border: 1px solid #3c9b47;
+    `;
+
+    const label = document.createElement("span");
+    label.textContent = "Room code: " + code;
+    label.style.fontWeight = "bold";
+    label.style.letterSpacing = "0.5px";
+
+    const btn = document.createElement("button");
+    btn.textContent = "Copy";
+    btn.style.cssText = `
+        background: #2c8a45;
+        color: #fff;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 8px;
+        font-weight: bold;
+        font-size: 14px;
+        cursor: pointer;
+    `;
+    btn.onmouseover = () => { btn.style.background = "#37a656"; };
+    btn.onmouseout = () => { btn.style.background = "#2c8a45"; };
+    btn.onclick = () => {
+        navigator.clipboard.writeText(code).then(() => {
+            btn.textContent = "Copied!";
+            setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+        }).catch(() => {
+            btn.textContent = "Copy failed";
+        });
+    };
+
+    box.appendChild(label);
+    box.appendChild(btn);
+    document.body.appendChild(box);
+    roomCodeOverlay = box;
+}
+
+function removeRoomCodeOverlay() {
+    if (roomCodeOverlay) {
+        roomCodeOverlay.remove();
+        roomCodeOverlay = null;
+    }
+}
+
+
+// ==========================================
+// MATCH START
+// ==========================================
+
+function beginMatch() {
+    matchStarted = true;
+    gameOver = false;
+    timeLeft = 120;
+    playerScore = 0;
+    botScore = 0;
+    updateScore();
+    updateTimer();
+    removeRoomCodeOverlay();
+    removeGameOverUI();
+}
+
+
+// ==========================================
+// UPDATE
+// ==========================================
+
+function update(time, delta) {
+    if (!matchStarted || gameOver) return;
+
+    if (mode === "online-client") {
+        updateClientMode(delta);
+    } else {
+        updateHostOrLocalMode(delta);
+    }
+
+    p1Name.x = players.p1.x; p1Name.y = players.p1.y - 65;
+    p2Name.x = players.p2.x; p2Name.y = players.p2.y - 65;
+
+    updateShotEffects(delta);
+
+    ball.body.velocity.x *= 0.992;
+    ball.body.velocity.y *= 0.992;
+}
+
+function updateHostOrLocalMode(delta) {
+    const allowArrowsForP1 = (mode === "bot");
+    movePlayerFromKeys(players.p1, {
+        left: wasdKeys.A.isDown || (allowArrowsForP1 && cursorKeys.left.isDown),
+        right: wasdKeys.D.isDown || (allowArrowsForP1 && cursorKeys.right.isDown),
+        up: wasdKeys.W.isDown || (allowArrowsForP1 && cursorKeys.up.isDown),
+        down: wasdKeys.S.isDown || (allowArrowsForP1 && cursorKeys.down.isDown)
+    });
+    if (Phaser.Input.Keyboard.JustDown(wasdKeys.SPACE)) {
+        tryKick(players.p1, p1State, opponentGoalXFor(players.p1));
+    }
+    trackBallControl(players.p1, p1State, p1Bar, p1PowerText, "P1");
+
+    if (mode === "local") {
+        movePlayerFromKeys(players.p2, {
+            left: cursorKeys.left.isDown,
+            right: cursorKeys.right.isDown,
+            up: cursorKeys.up.isDown,
+            down: cursorKeys.down.isDown
+        });
+        if (Phaser.Input.Keyboard.JustDown(wasdKeys.ENTER)) {
+            tryKick(players.p2, p2State, opponentGoalXFor(players.p2));
+        }
+        trackBallControl(players.p2, p2State, p2Bar, p2PowerText, "P2");
+    } else if (mode === "online-host") {
+        movePlayerFromKeys(players.p2, remoteInput);
+        if (remoteInput.kick) {
+            tryKick(players.p2, p2State, opponentGoalXFor(players.p2));
+            remoteInput.kick = false;
+        }
+        trackBallControl(players.p2, p2State, p2Bar, p2PowerText, "P2");
+
+        netSendTimer += delta;
+        if (netSendTimer >= NET_SEND_INTERVAL) {
+            netSendTimer = 0;
+            sendHostState();
+        }
+    } else {
+        updateBot(delta);
+    }
+
+    keepBallInBounds();
+    checkGoals();
+}
+
+function updateClientMode(delta) {
+    const input = {
+        left: wasdKeys.A.isDown || cursorKeys.left.isDown,
+        right: wasdKeys.D.isDown || cursorKeys.right.isDown,
+        up: wasdKeys.W.isDown || cursorKeys.up.isDown,
+        down: wasdKeys.S.isDown || cursorKeys.down.isDown,
+        kick: Phaser.Input.Keyboard.JustDown(wasdKeys.SPACE) || Phaser.Input.Keyboard.JustDown(wasdKeys.ENTER)
+    };
+
+    movePlayerFromKeys(players.p1, input);
+
+    netSendTimer += delta;
+    if (netSendTimer >= NET_SEND_INTERVAL || input.kick) {
+        netSendTimer = 0;
+        sendClientInput(input);
+    }
+}
+
+
+// ==========================================
+// MOVEMENT / KICK HELPERS
+// ==========================================
+
+function movePlayerFromKeys(sprite, k) {
+    let dx = 0, dy = 0;
+    if (k.left) dx = -1;
+    if (k.right) dx = 1;
+    if (k.up) dy = -1;
+    if (k.down) dy = 1;
+
+    if (dx !== 0 || dy !== 0) {
+        const len = Math.sqrt(dx * dx + dy * dy);
+        sprite.setVelocity((dx / len) * PLAYER_SPEED, (dy / len) * PLAYER_SPEED);
+    } else {
+        sprite.setVelocity(0, 0);
+    }
+}
+
+function opponentGoalXFor(sprite) {
+    return sprite === players.p1 ? FIELD_RIGHT : FIELD_LEFT;
+}
+
+function tryKick(sprite, state, goalX) {
+    const now = performance.now();
+    if (now - state.lastKick < 300) return;
+
+    const distance = Phaser.Math.Distance.Between(sprite.x, sprite.y, ball.x, ball.y);
+    if (distance > 125) return;
+
+    const angle = Phaser.Math.Angle.Between(sprite.x, sprite.y, ball.x, ball.y);
+    let power = NORMAL_KICK_POWER;
+
+    if (state.powerReady) {
+        power = POWER_SHOT_POWER;
+        state.powerReady = false;
+        state.controlTime = 0;
+    }
+
+    ball.setVelocity(Math.cos(angle) * power, Math.sin(angle) * power);
+    createShotEffect(angle, power === POWER_SHOT_POWER);
+    state.lastKick = now;
+}
+
+function trackBallControl(sprite, state, bar, label, tag) {
+    if (state.powerReady) return;
+
+    const distance = Phaser.Math.Distance.Between(sprite.x, sprite.y, ball.x, ball.y);
+
+    if (distance < 110) {
+        state.controlTime += game.loop.delta;
+        if (state.controlTime >= 2000) {
+            state.controlTime = 2000;
+            state.powerReady = true;
+            bar.width = 160;
+            label.setText(tag + ": POWER SHOT READY!");
+        } else {
+            bar.width = 160 * (state.controlTime / 2000);
+            label.setText(tag + ": " + (state.controlTime / 1000).toFixed(1) + " / 2.0");
+        }
+    } else {
+        state.controlTime = 0;
+        bar.width = 0;
+        label.setText(tag + ": hold ball 2s");
+    }
+}
+
+function ballKickedByCollision(sprite) {
+    const angle = Phaser.Math.Angle.Between(sprite.x, sprite.y, ball.x, ball.y);
+    const speed = Math.max(ball.body.velocity.length(), 100);
+    ball.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
+    createShotEffect(angle, speed >= POWER_SHOT_POWER * 0.85);
+}
+
+
+// ==========================================
+// BALL FIRE / SHOOT ANIMATION
+// ==========================================
+
+function createShotEffect(angle, powerShot) {
+    if (!scene || !ball) return;
+
+    const g = scene.add.graphics().setDepth(1);
+
+    const sparks = [];
+    const count = powerShot ? 16 : 10;
+    const speed = powerShot ? 260 : 190;
+
+    for (let i = 0; i < count; i++) {
+        const spread = Phaser.Math.FloatBetween(-0.8, 0.8);
+        const direction = angle + Math.PI + spread;
+        sparks.push({
+            x: ball.x,
+            y: ball.y,
+            vx: Math.cos(direction) * Phaser.Math.FloatBetween(speed * 0.45, speed),
+            vy: Math.sin(direction) * Phaser.Math.FloatBetween(speed * 0.45, speed),
+            size: Phaser.Math.FloatBetween(2, powerShot ? 7 : 5),
+            life: Phaser.Math.FloatBetween(100, powerShot ? 260 : 190)
+        });
+    }
+
+    shotEffects.push({
+        g,
+        angle,
+        life: powerShot ? 280 : 210,
+        maxLife: powerShot ? 280 : 210,
+        sparks,
+        powerShot
+    });
+}
+
+function updateShotEffects(delta) {
+    for (let i = shotEffects.length - 1; i >= 0; i--) {
+        const effect = shotEffects[i];
+        effect.life -= delta;
+
+        if (effect.life <= 0) {
+            effect.g.destroy();
+            shotEffects.splice(i, 1);
+            continue;
+        }
+
+        const fade = Phaser.Math.Clamp(effect.life / effect.maxLife, 0, 1);
+        const radius = BALL_RADIUS + (effect.powerShot ? 17 : 11);
+
+        effect.g.clear();
+
+        // Fiery trail behind the ball.
+        const trailLength = effect.powerShot ? 105 : 75;
+        const backX = ball.x - Math.cos(effect.angle) * trailLength;
+        const backY = ball.y - Math.sin(effect.angle) * trailLength;
+
+        effect.g.lineStyle(effect.powerShot ? 22 : 15, 0xff8a00, 0.12 * fade);
+        effect.g.beginPath();
+        effect.g.moveTo(ball.x, ball.y);
+        effect.g.lineTo(backX, backY);
+        effect.g.strokePath();
+
+        effect.g.lineStyle(effect.powerShot ? 10 : 7, 0xffc400, 0.45 * fade);
+        effect.g.beginPath();
+        effect.g.moveTo(ball.x, ball.y);
+        effect.g.lineTo(backX, backY);
+        effect.g.strokePath();
+
+        // Hot ring around the ball.
+        effect.g.lineStyle(effect.powerShot ? 7 : 5, 0xff5a00, 0.65 * fade);
+        effect.g.strokeCircle(ball.x, ball.y, radius);
+
+        effect.g.lineStyle(effect.powerShot ? 3 : 2, 0xffff66, 0.9 * fade);
+        effect.g.strokeCircle(ball.x, ball.y, radius - 5);
+
+        // Flying sparks.
+        for (const spark of effect.sparks) {
+            if (spark.life <= 0) continue;
+
+            spark.life -= delta;
+            spark.x += spark.vx * delta / 1000;
+            spark.y += spark.vy * delta / 1000;
+            spark.vx *= 0.985;
+            spark.vy *= 0.985;
+
+            const sparkFade = Phaser.Math.Clamp(spark.life / 180, 0, 1) * fade;
+            effect.g.fillStyle(spark.size > 5 ? 0xff5a00 : 0xffff66, sparkFade);
+            effect.g.fillCircle(spark.x, spark.y, spark.size * sparkFade);
+        }
+
+        // Power shots get an extra expanding shockwave.
+        if (effect.powerShot) {
+            const progress = 1 - fade;
+            effect.g.lineStyle(4, 0xffd21a, 0.55 * fade);
+            effect.g.strokeCircle(
+                ball.x,
+                ball.y,
+                BALL_RADIUS + 10 + progress * 35
+            );
+        }
+    }
+}
+
+// ==========================================
+// BOT AI (vs-bot mode only)
+// ==========================================
+
+function updateBot(delta) {
+    const bot = players.p2;
+    const distanceToBall = Phaser.Math.Distance.Between(bot.x, bot.y, ball.x, ball.y);
+
+    const goalX = FIELD_LEFT;
+    const goalY = WORLD_HEIGHT / 2;
+
+    let dirX = goalX - ball.x;
+    let dirY = goalY - ball.y;
+    const dirLen = Math.hypot(dirX, dirY) || 1;
+    dirX /= dirLen;
+    dirY /= dirLen;
+
+    const behindBallX = ball.x - dirX * (PLAYER_RADIUS + BALL_RADIUS + 6);
+    const behindBallY = ball.y - dirY * (PLAYER_RADIUS + BALL_RADIUS + 6);
+
+    const blend = Phaser.Math.Clamp((260 - distanceToBall) / 200, 0, 1);
+    const targetX = Phaser.Math.Linear(ball.x, behindBallX, blend);
+    const targetY = Phaser.Math.Linear(ball.y, behindBallY, blend);
+
+    const angle = Phaser.Math.Angle.Between(bot.x, bot.y, targetX, targetY);
+    let vx = Math.cos(angle) * BOT_SPEED;
+    let vy = Math.sin(angle) * BOT_SPEED;
+
+    botStuck.timer += delta;
+    if (botStuck.timer >= 300) {
+        const moved = Phaser.Math.Distance.Between(bot.x, bot.y, botStuck.sampleX, botStuck.sampleY);
+        botStuck.timer = 0;
+        botStuck.sampleX = bot.x;
+        botStuck.sampleY = bot.y;
+
+        if (moved < 15) {
+            botStuck.strikes++;
+        } else {
+            botStuck.strikes = 0;
+        }
+
+        if (botStuck.strikes >= 1) {
+            botStuck.nudgeUntil = performance.now() + 450;
+            botStuck.nudgeAngle = angle + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2 + Math.random() * 0.4);
+            botStuck.strikes = 0;
+        }
+    }
+
+    if (performance.now() < botStuck.nudgeUntil) {
+        vx += Math.cos(botStuck.nudgeAngle) * BOT_SPEED * 0.9;
+        vy += Math.sin(botStuck.nudgeAngle) * BOT_SPEED * 0.9;
+    }
+
+    bot.setVelocity(vx, vy);
+
+    if (distanceToBall < 100 && Math.random() < 0.03) {
+        tryKick(bot, p2State, FIELD_LEFT);
+    }
+    trackBallControl(bot, p2State, p2Bar, p2PowerText, "P2");
+}
+
+
+// ==========================================
+// BOUNDS / GOALS / RESET
+// ==========================================
+
+function keepBallInBounds() {
+    const goalTop = WORLD_HEIGHT / 2 - GOAL_HEIGHT / 2;
+    const goalBottom = WORLD_HEIGHT / 2 + GOAL_HEIGHT / 2;
+    const inGoalMouth = ball.y > goalTop && ball.y < goalBottom;
+
+    const leftLimit = inGoalMouth ? (FIELD_LEFT - GOAL_DEPTH + BALL_RADIUS) : (FIELD_LEFT + BALL_RADIUS);
+    if (ball.x < leftLimit) {
+        ball.x = leftLimit;
+        ball.body.velocity.x = Math.abs(ball.body.velocity.x) * 0.7;
+    }
+
+    const rightLimit = inGoalMouth ? (FIELD_RIGHT + GOAL_DEPTH - BALL_RADIUS) : (FIELD_RIGHT - BALL_RADIUS);
+    if (ball.x > rightLimit) {
+        ball.x = rightLimit;
+        ball.body.velocity.x = -Math.abs(ball.body.velocity.x) * 0.7;
+    }
+
+    if (ball.y < FIELD_TOP + BALL_RADIUS) {
+        ball.y = FIELD_TOP + BALL_RADIUS;
+        ball.body.velocity.y = Math.abs(ball.body.velocity.y) * 0.7;
+    }
+    if (ball.y > FIELD_BOTTOM - BALL_RADIUS) {
+        ball.y = FIELD_BOTTOM - BALL_RADIUS;
+        ball.body.velocity.y = -Math.abs(ball.body.velocity.y) * 0.7;
+    }
+}
+
+function checkGoals() {
+    const goalTop = WORLD_HEIGHT / 2 - GOAL_HEIGHT / 2;
+    const goalBottom = WORLD_HEIGHT / 2 + GOAL_HEIGHT / 2;
+
+    if (ball.x <= FIELD_LEFT - 10 && ball.y > goalTop && ball.y < goalBottom) {
+        botScore++;
+        updateScore();
+        if (botScore >= WIN_SCORE) { endGame(scene); return; }
+        resetBall();
+    }
+
+    if (ball.x >= FIELD_RIGHT + 10 && ball.y > goalTop && ball.y < goalBottom) {
+        playerScore++;
+        updateScore();
+        if (playerScore >= WIN_SCORE) { endGame(scene); return; }
+        resetBall();
+    }
+}
+
+function resetBall() {
+    ball.setPosition(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    ball.setVelocity(0, 0);
+
+    players.p1.setPosition(450, WORLD_HEIGHT / 2);
+    players.p1.setVelocity(0, 0);
+
+    players.p2.setPosition(1350, WORLD_HEIGHT / 2);
+    players.p2.setVelocity(0, 0);
+
+    p1State.controlTime = 0; p1State.powerReady = false; p1Bar.width = 0;
+    p1PowerText.setText("P1: hold ball 2s");
+
+    p2State.controlTime = 0; p2State.powerReady = false; p2Bar.width = 0;
+    p2PowerText.setText("P2: hold ball 2s");
+
+    botStuck.strikes = 0;
+    botStuck.nudgeUntil = 0;
+}
+
+function opponentLabel() {
+    if (mode === "bot") return "BOT";
+    if (mode === "local") return "P2";
+    return "OPP";
+}
+
+function updateScore() {
+    scoreText.setText("YOU  " + playerScore + "     " + botScore + "  " + opponentLabel());
+}
+
+function updateTimer() {
+    const minutes = Math.floor(timeLeft / 60);
+    const seconds = timeLeft % 60;
+    timerText.setText(minutes + ":" + seconds.toString().padStart(2, "0"));
+}
+
+
+// ==========================================
+// GAME OVER
+// ==========================================
+
+function endGame(sc) {
+    gameOver = true;
+    removeRoomCodeOverlay();
+
+    players.p1.setVelocity(0, 0);
+    players.p2.setVelocity(0, 0);
+    ball.setVelocity(0, 0);
+
+    if (mode === "online-host") sendHostState();
+    showGameOverUI(sc);
+}
+
+function showGameOverUI(sc) {
+    removeGameOverUI();
+
+    const w = sc.scale.width;
+    const h = sc.scale.height;
+    const result = playerScore > botScore ? "YOU WIN!" :
+                   botScore > playerScore ? "OPPONENT WINS!" : "DRAW!";
+
+    gameOverPanel = sc.add.rectangle(w / 2, h / 2, 600, 430, 0x061009, 0.96)
+        .setScrollFactor(0).setDepth(300)
+        .setStrokeStyle(4, 0x48b85a, 0.95);
+
+    gameOverText = sc.add.text(w / 2, h / 2 - 125,
+        result + "\n\n" + playerScore + " - " + botScore, {
+        fontFamily: "Arial", fontSize: "42px", fontStyle: "bold", color: "#ffffff",
+        align: "center"
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(301);
+
+    const makeEndButton = (x, y, label, callback) => {
+        return sc.add.text(x, y, label, {
+            fontFamily: "Arial", fontSize: "22px", fontStyle: "bold", color: "#ffffff",
+            backgroundColor: "#1e5c2e", padding: { x: 24, y: 14 }, align: "center"
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(301)
+          .setInteractive({ useHandCursor: true })
+          .on("pointerover", function() { this.setStyle({ backgroundColor: "#35a950" }); })
+          .on("pointerout", function() { this.setStyle({ backgroundColor: "#1e5c2e" }); })
+          .on("pointerdown", callback);
+    };
+
+    playAgainButton = makeEndButton(w / 2, h / 2 + 55, "PLAY AGAIN", () => {
+        if (mode === "online-client") {
+            if (conn && conn.open) conn.send({ type: "restart" });
+        } else {
+            resetMatchForReplay();
+        }
+    });
+
+    menuButton = makeEndButton(w / 2, h / 2 + 125, "BACK TO MENU", () => {
+        returnToMenu(sc);
+    });
+
+    applyResponsiveLayout(sc);
+}
+
+function removeGameOverUI() {
+    if (gameOverPanel) gameOverPanel.destroy();
+    if (gameOverText) gameOverText.destroy();
+    if (playAgainButton) playAgainButton.destroy();
+    if (menuButton) menuButton.destroy();
+    gameOverPanel = null;
+    gameOverText = null;
+    playAgainButton = null;
+    menuButton = null;
+}
+
+function resetMatchForReplay() {
+    removeGameOverUI();
+    gameOver = false;
+    matchStarted = true;
+    timeLeft = 120;
+    playerScore = 0;
+    botScore = 0;
+    resetBall();
+    updateScore();
+    updateTimer();
+
+    if (mode === "online-host") sendHostState();
+}
+
+function returnToMenu(sc) {
+    removeGameOverUI();
+    gameOver = false;
+    matchStarted = false;
+    playerScore = 0;
+    botScore = 0;
+    timeLeft = 120;
+
+    if (mode === "online-host" || mode === "online-client") {
+        if (conn) { try { conn.close(); } catch (e) {} }
+        if (peer) { try { peer.destroy(); } catch (e) {} }
+        conn = null;
+        peer = null;
+        isHost = false;
+    }
+
+    resetBall();
+    buildMenu(sc);
+    applyResponsiveLayout(sc);
+}
+
+
+// ==========================================
+// TEXTURES
+// ==========================================
+
+function createCircleTexture(sc, key, radius, color) {
+    const g = sc.add.graphics();
+
+    g.fillStyle(color, 1);
+    g.fillCircle(radius, radius, radius);
+
+    g.fillStyle(0xffffff, 0.18);
+    g.fillCircle(radius - radius * 0.3, radius - radius * 0.3, radius * 0.55);
+
+    g.lineStyle(4, 0xffffff, 0.9);
+    g.strokeCircle(radius, radius, radius - 2);
+
+    g.lineStyle(2, 0x000000, 0.25);
+    g.strokeCircle(radius, radius, radius - 5);
+
+    g.generateTexture(key, radius * 2, radius * 2);
+    g.destroy();
+}
+
+function createBallTexture(sc, key, radius) {
+    const g = sc.add.graphics();
+
+    g.fillStyle(0xffffff, 1);
+    g.fillCircle(radius, radius, radius);
+
+    g.fillStyle(0xffffff, 0.25);
+    g.fillCircle(radius - radius * 0.3, radius - radius * 0.3, radius * 0.5);
+
+    g.lineStyle(3, 0x222222, 1);
+    g.strokeCircle(radius, radius, radius - 2);
+
+    g.fillStyle(0x222222, 1);
+    g.fillCircle(radius, radius, 5);
+    g.fillCircle(radius - 9, radius - 8, 3);
+    g.fillCircle(radius + 9, radius - 8, 3);
+    g.fillCircle(radius - 9, radius + 8, 3);
+    g.fillCircle(radius + 9, radius + 8, 3);
+
+    g.generateTexture(key, radius * 2, radius * 2);
+    g.destroy();
+}
+
+
+// ==========================================
+// FIELD
+// ==========================================
+
+function drawField(sc) {
+    sc.add.rectangle(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, WORLD_WIDTH - 200, WORLD_HEIGHT - 200, 0x3c9b47);
+
+    const stripeWidth = 200;
+    for (let x = FIELD_LEFT; x < FIELD_RIGHT; x += stripeWidth) {
+        sc.add.rectangle(
+            x + stripeWidth / 2, WORLD_HEIGHT / 2,
+            stripeWidth, FIELD_BOTTOM - FIELD_TOP,
+            ((x / stripeWidth) % 2 === 0) ? 0x429f4d : 0x399344
+        );
+    }
+
+    const lineColor = 0xffffff;
+    sc.add.rectangle(WORLD_WIDTH / 2, FIELD_TOP, WORLD_WIDTH - 200, 6, lineColor);
+    sc.add.rectangle(WORLD_WIDTH / 2, FIELD_BOTTOM, WORLD_WIDTH - 200, 6, lineColor);
+    sc.add.rectangle(FIELD_LEFT, WORLD_HEIGHT / 2, 6, WORLD_HEIGHT - 200, lineColor);
+    sc.add.rectangle(FIELD_RIGHT, WORLD_HEIGHT / 2, 6, WORLD_HEIGHT - 200, lineColor);
+    sc.add.rectangle(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, 6, WORLD_HEIGHT - 200, lineColor);
+
+    sc.add.circle(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, 150, lineColor, 0).setStrokeStyle(4, lineColor);
+    sc.add.circle(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, 8, lineColor);
+
+    const border = sc.add.graphics();
+    border.lineStyle(60, 0x0f1f10, 0.6);
+    border.strokeRect(20, 20, WORLD_WIDTH - 40, WORLD_HEIGHT - 40);
+}
+
+
+// ==========================================
+// GOALS
+// ==========================================
+
+function drawGoals(sc) {
+    const goalTop = WORLD_HEIGHT / 2 - GOAL_HEIGHT / 2;
+    const goalBottom = WORLD_HEIGHT / 2 + GOAL_HEIGHT / 2;
+
+    sc.add.rectangle(FIELD_LEFT - GOAL_DEPTH / 2, WORLD_HEIGHT / 2, GOAL_DEPTH, GOAL_HEIGHT, 0xffffff, 0.12);
+    sc.add.rectangle(FIELD_RIGHT + GOAL_DEPTH / 2, WORLD_HEIGHT / 2, GOAL_DEPTH, GOAL_HEIGHT, 0xffffff, 0.12);
+
+    sc.add.rectangle(FIELD_LEFT, goalTop, GOAL_DEPTH, 5, 0xffffff);
+    sc.add.rectangle(FIELD_LEFT, goalBottom, GOAL_DEPTH, 5, 0xffffff);
+    sc.add.rectangle(FIELD_RIGHT, goalTop, GOAL_DEPTH, 5, 0xffffff);
+    sc.add.rectangle(FIELD_RIGHT, goalBottom, GOAL_DEPTH, 5, 0xffffff);
+
+    sc.add.circle(FIELD_LEFT, goalTop, 8, 0xffffff);
+    sc.add.circle(FIELD_LEFT, goalBottom, 8, 0xffffff);
+    sc.add.circle(FIELD_RIGHT, goalTop, 8, 0xffffff);
+    sc.add.circle(FIELD_RIGHT, goalBottom, 8, 0xffffff);
+}
